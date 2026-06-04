@@ -113,6 +113,19 @@ array<string> LangTable =
 
 string UserAgent = "Mozilla/5.0 (Windows NT 6.1) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/41.0.2228.0 Safari/537.36";
 
+// User-editable defaults.
+// The login dialog can override DefaultBaseUrl, DefaultModel, and ApiKey at runtime.
+string DefaultBaseUrl = "http://localhost:1234";
+string DefaultModel = "";
+string RequestTemperature = "0.2";
+string RequestMaxTokens = "4096";
+string RequestTopP = "0.9";
+string RequestFrequencyPenalty = "0";
+string RequestPresencePenalty = "0";
+bool EnableRequestTimeout = true;
+int RequestTimeoutMs = 30000;
+bool DebugMode = false;
+
 string GetTitle()
 {
 	return "{$CP949=LM Studio 번역$}{$CP950=LM Studio 翻譯$}{$CP0=LM Studio translate$}";
@@ -130,12 +143,12 @@ string GetDesc()
 
 string GetLoginTitle()
 {
-	return "Input local http url";
+	return "LM Studio server";
 }
 
 string GetLoginDesc()
 {
-	return "Input local http url";
+	return "Input OpenAI-compatible server URL. Optional password field: model=name;key=api-key";
 }
 
 string GetUserText()
@@ -145,21 +158,69 @@ string GetUserText()
 
 string GetPasswordText()
 {
-	return "";
+	return "options:";
 }
 
 string http_url;
+string runtime_model;
+string api_key;
+
+string GetOptionValue(string options, string name)
+{
+	string key = name + "=";
+	int start = options.find(key);
+	if (start < 0) return "";
+
+	start += key.length();
+	int end = options.find(";", start);
+	if (end < 0) end = options.length();
+
+	string value = options.substr(start, end - start);
+	value.Trim();
+	return value;
+}
+
+string DebugReturn(string message)
+{
+	if (DebugMode) return "[LM Studio translator] " + message;
+	return "";
+}
 
 string ServerLogin(string User, string Pass)
 {
 	http_url = User;
-	if (http_url.empty()) return "fail";
+	http_url.Trim();
+	runtime_model = DefaultModel;
+	api_key = "";
+
+	string options = Pass;
+	options.Trim();
+	if (!options.empty())
+	{
+		string model = GetOptionValue(options, "model");
+		string key = GetOptionValue(options, "key");
+		if (key.empty()) key = GetOptionValue(options, "apiKey");
+		if (key.empty()) key = GetOptionValue(options, "api_key");
+
+		if (model.empty() && key.empty())
+		{
+			api_key = options;
+		}
+		else
+		{
+			if (!model.empty()) runtime_model = model;
+			if (!key.empty()) api_key = key;
+		}
+	}
+
 	return "200 ok";
 }
 
 void ServerLogout()
 {
 	http_url = "";
+	runtime_model = "";
+	api_key = "";
 }
 
 array<string> GetSrcLangs()
@@ -269,13 +330,21 @@ string DecodeCommonUrlEscapes(string text)
 string NormalizeBaseUrl(string url)
 {
 	url.Trim();
-	if (url.empty()) url = "http://localhost:1234";
+	if (url.empty()) url = DefaultBaseUrl;
 
 	url = HostRegExpRemove(url, "/v1/chat/completions/?$");
 	url = HostRegExpRemove(url, "/v1/?$");
 
 	if (url.Right(1) != "/") url += "/";
 	return url;
+}
+
+string BuildSendHeader()
+{
+	string header = "Content-Type: application/json\r\n";
+	header += "accept: application/json\r\n";
+	if (!api_key.empty()) header += "Authorization: Bearer " + api_key + "\r\n";
+	return header;
 }
 
 string getChoiceContent(JsonValue root)
@@ -297,6 +366,13 @@ string getChoiceContent(JsonValue root)
 
 				JsonValue text = choice["text"];
 				if (text.isString()) return text.asString();
+
+				JsonValue delta = choice["delta"];
+				if (delta.isObject())
+				{
+					JsonValue deltaContent = delta["content"];
+					if (deltaContent.isString()) return deltaContent.asString();
+				}
 			}
 		}
 	}
@@ -304,20 +380,38 @@ string getChoiceContent(JsonValue root)
 	return findContent(root);
 }
 
+string getErrorMessage(JsonValue root)
+{
+	if (root.isObject())
+	{
+		JsonValue error = root["error"];
+		if (error.isObject())
+		{
+			JsonValue message = error["message"];
+			if (message.isString()) return message.asString();
+		}
+		else if (error.isString())
+		{
+			return error.asString();
+		}
+	}
+	return "";
+}
+
 string Translate(string Text, string &in SrcLang, string &in DstLang)
 {
-//HostOpenConsole();	// for debug
-	string SendHeader = "Content-Type: application/json\r\n";
-	SendHeader += "accept: application/json\r\n";
+	if (DebugMode) HostOpenConsole();
+	string SendHeader = BuildSendHeader();
 	
 	string url = NormalizeBaseUrl(http_url);
 
-	// HostIncTimeOut(15 * 1000);
+	if (EnableRequestTimeout) HostIncTimeOut(RequestTimeoutMs);
+
 	string langPrompt = (SrcLang.empty() ? "Translate the subtitle" : "Translate from " + SrcLang) + " to " + DstLang + ".";
 	string systemPrompt = langPrompt + " You are a professional subtitle translation engine. Translate only the visible subtitle text into the requested target language. Preserve the original meaning, tone, register, speaker personality, emotion, cultural nuance, humor, idioms, and scene context. Prefer natural, fluent target-language phrasing over literal word-for-word translation. Follow the grammar, punctuation, spacing, and writing conventions of the target language. Keep names, terms, numbers, symbols, and pre-existing non-source-language words unchanged when they should remain as-is. Preserve existing subtitle markup and control codes exactly, including HTML tags, font tags, bracketed effects, and ASS/SSA override blocks like {\\an8}; do not translate or rewrite tags and control codes. Preserve line breaks as much as possible. Never output URL-encoded tokens such as %20, %0A, %2C, %3F, or %5C; use normal spaces, punctuation, line breaks, and characters instead. Output only the translated subtitle text. Do not add explanations, comments, language labels, Markdown, wrapper quotes, or extra text. Do not censor the translation.";
-	string model = "";
+	string model = runtime_model;
 	string modelStr = model.empty() ? "" : "\"model\": \"" + model + "\",";
-	string paramsStr = "\"temperature\": 0.2,\"max_tokens\": 4096,\"top_p\": 0.9,\"frequency_penalty\": 0,\"presence_penalty\": 0,";
+	string paramsStr = "\"temperature\": " + RequestTemperature + ",\"max_tokens\": " + RequestMaxTokens + ",\"top_p\": " + RequestTopP + ",\"frequency_penalty\": " + RequestFrequencyPenalty + ",\"presence_penalty\": " + RequestPresencePenalty + ",";
 	string Post = "{" + modelStr + paramsStr + "\"messages\": [{ \"role\": \"system\", \"content\": \"" + EscapeJson(systemPrompt) + "\" },{ \"role\": \"user\", \"content\": \"" + EscapeJson(Text) + "\" }]}";
 	string ret = "";
 	uintptr http = HostOpenHTTP(url + "v1/chat/completions", UserAgent, SendHeader, Post);
@@ -330,6 +424,12 @@ string Translate(string Text, string &in SrcLang, string &in DstLang)
 		if (Reader.parse(json, Root) && Root.isObject())
 		{
 			ret = getChoiceContent(Root);
+			if (ret.empty())
+			{
+				string error = getErrorMessage(Root);
+				if (!error.empty()) ret = DebugReturn("API error: " + error);
+				else ret = DebugReturn("No translation content in response.");
+			}
 
 			if (!ret.empty())
 			{
@@ -349,8 +449,16 @@ string Translate(string Text, string &in SrcLang, string &in DstLang)
 				ret = HostRegExpRemove(ret, "^(Here is|Here's) [a-zA-Z ,]+:");
 			}
 		}
+		else
+		{
+			ret = DebugReturn("Could not parse JSON response.");
+		}
 
 		HostCloseHTTP(http);		
+	}
+	else
+	{
+		ret = DebugReturn("HTTP request failed: " + url + "v1/chat/completions");
 	}
 	
 	return ret;

@@ -1,2 +1,3 @@
 install_lmstudio_translator.log
 *.bak-codex-*
+dist/

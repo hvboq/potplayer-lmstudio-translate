@@ -18,6 +18,14 @@ try {
 	$timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
 	$backupPath = "$DestinationPath.bak-codex-$timestamp"
 
+	if (-not (Test-Path -LiteralPath $SourcePath)) {
+		throw "Source file not found: $SourcePath"
+	}
+
+	if (-not (Test-Path -LiteralPath $DestinationPath)) {
+		throw "Destination file not found: $DestinationPath"
+	}
+
 	Copy-Item -LiteralPath $DestinationPath -Destination $backupPath -Force
 	Copy-Item -LiteralPath $SourcePath -Destination $DestinationPath -Force
 
