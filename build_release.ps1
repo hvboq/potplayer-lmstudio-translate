@@ -17,7 +17,9 @@ Remove-Item -LiteralPath $zipPath -Force -ErrorAction SilentlyContinue
 $files = @(
 	(Join-Path -Path $PSScriptRoot -ChildPath "SubtitleTranslate - LM Studio.as"),
 	(Join-Path -Path $PSScriptRoot -ChildPath "install_lmstudio_translator.ps1"),
-	(Join-Path -Path $PSScriptRoot -ChildPath "README.md")
+	(Join-Path -Path $PSScriptRoot -ChildPath "README.md"),
+	(Join-Path -Path $PSScriptRoot -ChildPath "README.ko.md"),
+	(Join-Path -Path $PSScriptRoot -ChildPath "LICENSE")
 )
 
 foreach ($file in $files) {

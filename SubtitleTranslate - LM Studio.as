@@ -125,6 +125,41 @@ string RequestPresencePenalty = "0";
 bool EnableRequestTimeout = true;
 int RequestTimeoutMs = 30000;
 bool DebugMode = false;
+bool ProtectSubtitleMarkup = true;
+bool EnableQualityRetry = true;
+int MaxQualityRetries = 1;
+bool EnableSubtitleCache = true;
+int MaxCacheItems = 256;
+
+array<string> ProtectionTokens =
+{
+	"__POT_TAG_A__",
+	"__POT_TAG_B__",
+	"__POT_TAG_C__",
+	"__POT_TAG_D__",
+	"__POT_TAG_E__",
+	"__POT_TAG_F__",
+	"__POT_TAG_G__",
+	"__POT_TAG_H__",
+	"__POT_TAG_I__",
+	"__POT_TAG_J__",
+	"__POT_TAG_K__",
+	"__POT_TAG_L__",
+	"__POT_TAG_M__",
+	"__POT_TAG_N__",
+	"__POT_TAG_O__",
+	"__POT_TAG_P__",
+	"__POT_TAG_Q__",
+	"__POT_TAG_R__",
+	"__POT_TAG_S__",
+	"__POT_TAG_T__",
+	"__POT_TAG_U__",
+	"__POT_TAG_V__",
+	"__POT_TAG_W__",
+	"__POT_TAG_X__",
+	"__POT_TAG_Y__",
+	"__POT_TAG_Z__"
+};
 
 string GetTitle()
 {
@@ -133,7 +168,7 @@ string GetTitle()
 
 string GetVersion()
 {
-	return "1";
+	return "2";
 }
 
 string GetDesc()
@@ -164,6 +199,9 @@ string GetPasswordText()
 string http_url;
 string runtime_model;
 string api_key;
+string last_error;
+array<string> CacheKeys;
+array<string> CacheValues;
 
 string GetOptionValue(string options, string name)
 {
@@ -186,12 +224,132 @@ string DebugReturn(string message)
 	return "";
 }
 
+string BuildCacheKey(string url, string text, string SrcLang, string DstLang)
+{
+	return url + "\n" + runtime_model + "\n" + SrcLang + "\n" + DstLang + "\n" + text;
+}
+
+string GetCachedTranslation(string key)
+{
+	if (!EnableSubtitleCache) return "";
+
+	for (int i = 0, len = CacheKeys.size(); i < len; i++)
+	{
+		if (CacheKeys[i] == key) return CacheValues[i];
+	}
+
+	return "";
+}
+
+void PutCachedTranslation(string key, string value)
+{
+	if (!EnableSubtitleCache || key.empty() || value.empty()) return;
+
+	for (int i = 0, len = CacheKeys.size(); i < len; i++)
+	{
+		if (CacheKeys[i] == key)
+		{
+			CacheValues[i] = value;
+			return;
+		}
+	}
+
+	while (CacheKeys.size() >= MaxCacheItems && CacheKeys.size() > 0)
+	{
+		CacheKeys.removeAt(0);
+		CacheValues.removeAt(0);
+	}
+
+	CacheKeys.insertLast(key);
+	CacheValues.insertLast(value);
+}
+
+string ProtectMarkup(string text, array<string> &inout protectedParts)
+{
+	if (!ProtectSubtitleMarkup) return text;
+
+	string ret = "";
+	int pos = 0;
+
+	while (pos < text.length())
+	{
+		int htmlStart = text.find("<", pos);
+		int assStart = text.find("{\\", pos);
+		int start = -1;
+		string closeMark = "";
+
+		if (htmlStart >= 0 && (assStart < 0 || htmlStart < assStart))
+		{
+			start = htmlStart;
+			closeMark = ">";
+		}
+		else if (assStart >= 0)
+		{
+			start = assStart;
+			closeMark = "}";
+		}
+
+		if (start < 0)
+		{
+			ret += text.substr(pos);
+			break;
+		}
+
+		if (protectedParts.size() >= ProtectionTokens.size())
+		{
+			ret += text.substr(pos);
+			break;
+		}
+
+		int end = text.find(closeMark, start);
+		if (end < 0)
+		{
+			ret += text.substr(pos);
+			break;
+		}
+
+		ret += text.substr(pos, start - pos);
+		string token = ProtectionTokens[protectedParts.size()];
+		protectedParts.insertLast(text.substr(start, end - start + 1));
+		ret += token;
+		pos = end + 1;
+	}
+
+	return ret;
+}
+
+string RestoreMarkup(string text, array<string> &in protectedParts)
+{
+	if (!ProtectSubtitleMarkup) return text;
+
+	for (int i = 0, len = protectedParts.size(); i < len; i++)
+	{
+		text.replace(ProtectionTokens[i], protectedParts[i]);
+	}
+
+	return text;
+}
+
+bool MissingProtectedToken(string text, array<string> &in protectedParts)
+{
+	if (!ProtectSubtitleMarkup) return false;
+
+	for (int i = 0, len = protectedParts.size(); i < len; i++)
+	{
+		if (text.find(ProtectionTokens[i]) < 0) return true;
+	}
+
+	return false;
+}
+
 string ServerLogin(string User, string Pass)
 {
 	http_url = User;
 	http_url.Trim();
 	runtime_model = DefaultModel;
 	api_key = "";
+	while (CacheKeys.size() > 0) CacheKeys.removeAt(0);
+	while (CacheValues.size() > 0) CacheValues.removeAt(0);
 
 	string options = Pass;
 	options.Trim();
@@ -221,6 +379,8 @@ void ServerLogout()
 	http_url = "";
 	runtime_model = "";
 	api_key = "";
+	while (CacheKeys.size() > 0) CacheKeys.removeAt(0);
+	while (CacheValues.size() > 0) CacheValues.removeAt(0);
 }
 
 array<string> GetSrcLangs()
@@ -398,6 +558,117 @@ string getErrorMessage(JsonValue root)
 	return "";
 }
 
+string BuildSystemPrompt(string langPrompt, bool retryMode)
+{
+	string prompt = langPrompt + " You are a professional subtitle translation engine. Translate only the visible subtitle text into the requested target language. Preserve the original meaning, tone, register, speaker personality, emotion, cultural nuance, humor, idioms, and scene context. Prefer natural, fluent target-language phrasing over literal word-for-word translation. Follow the grammar, punctuation, spacing, and writing conventions of the target language. Keep names, terms, numbers, symbols, and pre-existing non-source-language words unchanged when they should remain as-is. Preserve existing subtitle markup and control codes exactly, including HTML tags, font tags, bracketed effects, and ASS/SSA override blocks like {\\an8}; do not translate or rewrite tags and control codes. Preserve line breaks as much as possible. Never output URL-encoded tokens such as %20, %0A, %2C, %3F, or %5C; use normal spaces, punctuation, line breaks, and characters instead. Output only the translated subtitle text. Do not add explanations, comments, language labels, Markdown, wrapper quotes, or extra text. Do not censor the translation.";
+
+	if (ProtectSubtitleMarkup)
+	{
+		prompt += " The source may contain placeholder tokens such as __POT_TAG_A__; copy every placeholder token exactly and do not translate, remove, split, or reorder it.";
+	}
+
+	if (retryMode)
+	{
+		prompt += " Retry with stricter formatting: return only the corrected translated subtitle text, preserve all placeholders exactly, and remove any explanatory prefix, Markdown, wrapper quote, or URL-encoded token.";
+	}
+
+	return prompt;
+}
+
+string BuildPostBody(string systemPrompt, string userText)
+{
+	string model = runtime_model;
+	string modelStr = model.empty() ? "" : "\"model\": \"" + model + "\",";
+	string paramsStr = "\"temperature\": " + RequestTemperature + ",\"max_tokens\": " + RequestMaxTokens + ",\"top_p\": " + RequestTopP + ",\"frequency_penalty\": " + RequestFrequencyPenalty + ",\"presence_penalty\": " + RequestPresencePenalty + ",";
+	return "{" + modelStr + paramsStr + "\"messages\": [{ \"role\": \"system\", \"content\": \"" + EscapeJson(systemPrompt) + "\" },{ \"role\": \"user\", \"content\": \"" + EscapeJson(userText) + "\" }]}";
+}
+
+string SendTranslationRequest(string url, string SendHeader, string systemPrompt, string userText)
+{
+	last_error = "";
+
+	string Post = BuildPostBody(systemPrompt, userText);
+	uintptr http = HostOpenHTTP(url + "v1/chat/completions", UserAgent, SendHeader, Post);
+	if (http == 0)
+	{
+		last_error = "HTTP request failed: " + url + "v1/chat/completions";
+		return "";
+	}
+
+	string json = HostGetContentHTTP(http);
+	JsonReader Reader;
+	JsonValue Root;
+	string ret = "";
+
+	if (Reader.parse(json, Root) && Root.isObject())
+	{
+		ret = getChoiceContent(Root);
+		if (ret.empty())
+		{
+			string error = getErrorMessage(Root);
+			if (!error.empty()) last_error = "API error: " + error;
+			else last_error = "No translation content in response.";
+		}
+	}
+	else
+	{
+		last_error = "Could not parse JSON response.";
+	}
+
+	HostCloseHTTP(http);
+	return ret;
+}
+
+string CleanTranslatedText(string ret)
+{
+	ret.replace("<br/>", "\n");
+	ret.replace("<br />", "\n");
+	ret.replace("<br  />", "\n");
+	ret = DecodeCommonUrlEscapes(ret);
+	ret.replace("\r\n", "\n");
+	ret.replace("\r", "\n");
+	ret.replace("\n\n", "\n");
+	ret.replace("\n\n", "\n");
+	ret.Trim();
+
+	ret = HostRegExpRemove(ret, "^(Here is|Here's) [a-zA-Z ,]+:");
+	return ret;
+}
+
+bool ContainsUrlEncodedToken(string text)
+{
+	if (text.find("%20") >= 0 || text.find("%0A") >= 0 || text.find("%0a") >= 0) return true;
+	if (text.find("%0D") >= 0 || text.find("%0d") >= 0 || text.find("%2C") >= 0 || text.find("%2c") >= 0) return true;
+	if (text.find("%3F") >= 0 || text.find("%3f") >= 0 || text.find("%5C") >= 0 || text.find("%5c") >= 0) return true;
+	return false;
+}
+
+bool HasInstructionalWrapper(string text)
+{
+	string probe = text;
+	probe.Trim();
+	string lower = probe;
+	lower.MakeLower();
+
+	if (lower.find("here is") == 0 || lower.find("here's") == 0) return true;
+	if (lower.find("translation:") == 0 || lower.find("translated text:") == 0) return true;
+	if (lower.find("translated subtitle:") == 0 || lower.find("output:") == 0) return true;
+	if (probe.find("```") >= 0) return true;
+	return false;
+}
+
+bool NeedsQualityRetry(string raw, string cleaned, array<string> &in protectedParts)
+{
+	if (!EnableQualityRetry) return false;
+	if (raw.empty() || cleaned.empty()) return false;
+
+	if (ContainsUrlEncodedToken(raw)) return true;
+	if (HasInstructionalWrapper(raw)) return true;
+	if (MissingProtectedToken(raw, protectedParts)) return true;
+
+	return false;
+}
+
 string Translate(string Text, string &in SrcLang, string &in DstLang)
 {
 	if (DebugMode) HostOpenConsole();
@@ -407,58 +678,44 @@ string Translate(string Text, string &in SrcLang, string &in DstLang)
 
 	if (EnableRequestTimeout) HostIncTimeOut(RequestTimeoutMs);
 
-	string langPrompt = (SrcLang.empty() ? "Translate the subtitle" : "Translate from " + SrcLang) + " to " + DstLang + ".";
-	string systemPrompt = langPrompt + " You are a professional subtitle translation engine. Translate only the visible subtitle text into the requested target language. Preserve the original meaning, tone, register, speaker personality, emotion, cultural nuance, humor, idioms, and scene context. Prefer natural, fluent target-language phrasing over literal word-for-word translation. Follow the grammar, punctuation, spacing, and writing conventions of the target language. Keep names, terms, numbers, symbols, and pre-existing non-source-language words unchanged when they should remain as-is. Preserve existing subtitle markup and control codes exactly, including HTML tags, font tags, bracketed effects, and ASS/SSA override blocks like {\\an8}; do not translate or rewrite tags and control codes. Preserve line breaks as much as possible. Never output URL-encoded tokens such as %20, %0A, %2C, %3F, or %5C; use normal spaces, punctuation, line breaks, and characters instead. Output only the translated subtitle text. Do not add explanations, comments, language labels, Markdown, wrapper quotes, or extra text. Do not censor the translation.";
-	string model = runtime_model;
-	string modelStr = model.empty() ? "" : "\"model\": \"" + model + "\",";
-	string paramsStr = "\"temperature\": " + RequestTemperature + ",\"max_tokens\": " + RequestMaxTokens + ",\"top_p\": " + RequestTopP + ",\"frequency_penalty\": " + RequestFrequencyPenalty + ",\"presence_penalty\": " + RequestPresencePenalty + ",";
-	string Post = "{" + modelStr + paramsStr + "\"messages\": [{ \"role\": \"system\", \"content\": \"" + EscapeJson(systemPrompt) + "\" },{ \"role\": \"user\", \"content\": \"" + EscapeJson(Text) + "\" }]}";
-	string ret = "";
-	uintptr http = HostOpenHTTP(url + "v1/chat/completions", UserAgent, SendHeader, Post);
-	if (http != 0)
+	string cacheKey = BuildCacheKey(url, Text, SrcLang, DstLang);
+	string cached = GetCachedTranslation(cacheKey);
+	if (!cached.empty())
 	{
-		string json = HostGetContentHTTP(http);
-		JsonReader Reader;
-		JsonValue Root;
-	
-		if (Reader.parse(json, Root) && Root.isObject())
-		{
-			ret = getChoiceContent(Root);
-			if (ret.empty())
-			{
-				string error = getErrorMessage(Root);
-				if (!error.empty()) ret = DebugReturn("API error: " + error);
-				else ret = DebugReturn("No translation content in response.");
-			}
-
-			if (!ret.empty())
-			{
-				SrcLang = "UTF8";
-				DstLang = "UTF8";
-
-				ret.replace("<br/>", "\n");
-				ret.replace("<br />", "\n");
-				ret.replace("<br  />", "\n");
-				ret = DecodeCommonUrlEscapes(ret);
-				ret.replace("\r\n", "\n");
-				ret.replace("\r", "\n");
-				ret.replace("\n\n", "\n");
-				ret.replace("\n\n", "\n");
-				ret.Trim();
-
-				ret = HostRegExpRemove(ret, "^(Here is|Here's) [a-zA-Z ,]+:");
-			}
-		}
-		else
-		{
-			ret = DebugReturn("Could not parse JSON response.");
-		}
-
-		HostCloseHTTP(http);		
+		SrcLang = "UTF8";
+		DstLang = "UTF8";
+		return cached;
 	}
+
+	array<string> protectedParts;
+	string requestText = ProtectMarkup(Text, protectedParts);
+	string langPrompt = (SrcLang.empty() ? "Translate the subtitle" : "Translate from " + SrcLang) + " to " + DstLang + ".";
+	string raw = SendTranslationRequest(url, SendHeader, BuildSystemPrompt(langPrompt, false), requestText);
+	string ret = raw.empty() ? "" : CleanTranslatedText(raw);
+
+	if (NeedsQualityRetry(raw, ret, protectedParts))
+	{
+		for (int i = 0; i < MaxQualityRetries; i++)
+		{
+			string retryRaw = SendTranslationRequest(url, SendHeader, BuildSystemPrompt(langPrompt, true), requestText);
+			string retryRet = retryRaw.empty() ? "" : CleanTranslatedText(retryRaw);
+
+			if (!retryRet.empty())
+			{
+				raw = retryRaw;
+				ret = retryRet;
+				if (!NeedsQualityRetry(raw, ret, protectedParts)) break;
+			}
+		}
+	}
+
+	if (ret.empty()) ret = DebugReturn(last_error);
 	else
 	{
-		ret = DebugReturn("HTTP request failed: " + url + "v1/chat/completions");
+		ret = RestoreMarkup(ret, protectedParts);
+		SrcLang = "UTF8";
+		DstLang = "UTF8";
+		PutCachedTranslation(cacheKey, ret);
 	}
 	
 	return ret;

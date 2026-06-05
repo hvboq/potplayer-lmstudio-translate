@@ -2,6 +2,8 @@
 
 PotPlayer subtitle translation extension for LM Studio's OpenAI-compatible local server.
 
+Korean documentation: [README.ko.md](README.ko.md)
+
 ## Features
 
 - Uses `POST /v1/chat/completions` on a local LM Studio server.
@@ -12,6 +14,9 @@ PotPlayer subtitle translation extension for LM Studio's OpenAI-compatible local
 - Strongly discourages URL-encoded output tokens such as `%20`, `%0A`, `%2C`, `%3F`, and `%5C`.
 - Keeps the prompt language-agnostic so it can be used for many source and target languages.
 - Supports optional model selection and Bearer API keys.
+- Protects subtitle tags/control codes with temporary placeholders before translation.
+- Can retry once when the model returns wrappers, Markdown, URL-encoded tokens, or damaged placeholders.
+- Caches repeated subtitles to reduce duplicate local model requests.
 - Includes installer and release zip helper scripts.
 
 ## Requirements
@@ -85,12 +90,20 @@ string RequestPresencePenalty = "0";
 bool EnableRequestTimeout = true;
 int RequestTimeoutMs = 30000;
 bool DebugMode = false;
+bool ProtectSubtitleMarkup = true;
+bool EnableQualityRetry = true;
+int MaxQualityRetries = 1;
+bool EnableSubtitleCache = true;
+int MaxCacheItems = 256;
 ```
 
 Notes:
 
 - Leave `DefaultModel` empty to use the currently loaded LM Studio model.
 - Set `DefaultModel` or use `model=...` in the login options when your server requires a model name.
+- `ProtectSubtitleMarkup` replaces tags such as `<i>`, `</font>`, and `{\\an8}` with temporary placeholders before translation, then restores them afterward.
+- `EnableQualityRetry` retries when output appears to include explanation wrappers, Markdown fences, URL-encoded tokens, or missing protected placeholders.
+- `EnableSubtitleCache` reuses translations for repeated subtitle lines with the same URL, model, source language, and target language.
 - Enable `DebugMode` only when troubleshooting. In debug mode, failures can be returned as visible diagnostic subtitle text.
 - Increase `RequestTimeoutMs` if your model is slow.
 
@@ -113,6 +126,8 @@ The zip includes:
 - `SubtitleTranslate - LM Studio.as`
 - `install_lmstudio_translator.ps1`
 - `README.md`
+- `README.ko.md`
+- `LICENSE`
 
 ## Troubleshooting
 
@@ -134,8 +149,13 @@ The zip includes:
 
 The extension already avoids URL-encoding subtitle input and post-processes common URL escape sequences. If a model still produces encoded text, try a different model or lower the temperature.
 
+### Subtitle tags are changed or removed
+
+Keep `ProtectSubtitleMarkup = true`. This protects HTML tags and ASS/SSA override blocks with placeholders before sending text to the model.
+
 ### Translation is too slow
 
 - Use a smaller/faster model.
 - Reduce `RequestMaxTokens`.
+- Keep `EnableSubtitleCache = true` for repeated subtitle lines.
 - Increase `RequestTimeoutMs` if the model eventually responds but needs more time.
