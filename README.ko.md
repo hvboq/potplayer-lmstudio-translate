@@ -78,6 +78,8 @@ string DefaultModel = "";
 string RequestTemperature = "0.2";
 string RequestMaxTokens = "4096";
 string RequestTopP = "0.9";
+string RequestFrequencyPenalty = "0";
+string RequestPresencePenalty = "0";
 bool EnableRequestTimeout = true;
 int RequestTimeoutMs = 30000;
 bool DebugMode = false;
@@ -91,10 +93,12 @@ int MaxCacheItems = 256;
 설정 메모:
 
 - `DefaultModel`을 비워두면 LM Studio에서 현재 로드된 모델을 사용합니다.
+- 서버가 모델명을 요구하면 `DefaultModel`을 설정하거나 로그인 옵션에 `model=...`을 입력하세요.
 - `ProtectSubtitleMarkup`은 `<i>`, `</font>`, `{\\an8}` 같은 자막 태그를 임시 토큰으로 보호합니다.
 - `EnableQualityRetry`는 `%20`, 설명문, Markdown, 보호 토큰 누락 같은 이상 출력이 감지될 때 한 번 더 요청합니다.
 - `EnableSubtitleCache`는 같은 자막이 반복될 때 이전 번역을 재사용합니다.
 - `DebugMode`는 문제를 찾을 때만 켜세요. 실패 메시지가 자막으로 보일 수 있습니다.
+- 모델 응답이 느리지만 결국 성공한다면 `RequestTimeoutMs`를 늘려 보세요.
 
 ## 릴리즈 zip 만들기
 
@@ -107,6 +111,18 @@ int MaxCacheItems = 256;
 ```text
 dist\potplayer-lmstudio-translate.zip
 ```
+
+zip에는 다음 파일이 포함됩니다.
+
+- `SubtitleTranslate - LM Studio.as`
+- `install_lmstudio_translator.ps1`
+- `README.md`
+- `README.ko.md`
+- `LICENSE`
+
+## 라이선스
+
+이 프로젝트는 MIT 라이선스로 배포됩니다. 자세한 내용은 [LICENSE](LICENSE)를 확인하세요.
 
 ## 문제 해결
 
